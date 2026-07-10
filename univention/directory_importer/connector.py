@@ -15,6 +15,7 @@ from ldap.ldapobject import ReconnectLDAPObject
 from junkaptor.trans import TransformerSeq
 
 from . import gen_password
+from .attribute_mapping import run_group_attribute_mapping
 from .config import ConnectorConfig
 from .sanitize import extract_domain_from_dn
 from .trans import DomainBasedUsernameTransformer, MemberRefsTransformer
@@ -336,11 +337,23 @@ class Connector:
         """
         returns 2-tuple of dict instances containing existing target entries
         """
+        user_query_properties = set(self._config.udm.user_properties)
+        mapping_config = self._config.group_attribute_mapping
+        if mapping_config is not None and mapping_config.enabled:
+            mapping_attrs = {rule.attribute for rule in mapping_config.mapping}
+            overlap = mapping_attrs & set(self._config.udm.user_properties)
+            if overlap:
+                logging.warning(
+                    "Mapped attributes %s are also listed in user_properties, "
+                    "the regular sync will keep overwriting them",
+                    ", ".join(sorted(overlap)),
+                )
+            user_query_properties |= mapping_attrs
         users = self._udm.list(
             UDMModel.USER,
             self._config.udm.user_primary_key_property,
             position=f"{self._config.udm.user_ou},{self._udm.base_position}",
-            properties=self._config.udm.user_properties,
+            properties=sorted(user_query_properties),
         )
         groups = self._udm.list(
             UDMModel.GROUP,
@@ -575,6 +588,14 @@ class Connector:
         source_count_all += source_count
         delete_count_all += delete_count
         error_count_all += error_count
+
+        run_group_attribute_mapping(
+            self,
+            self._config,
+            source_users,
+            id2dn_users,
+            old_users,
+        )
 
         # finally log summary messages
         self.log_summary(

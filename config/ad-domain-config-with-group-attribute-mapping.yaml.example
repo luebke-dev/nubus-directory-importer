@@ -1,0 +1,191 @@
+---
+# Configuration example for syncing from MS AD with openDesk post-processing
+#
+# This configuration demonstrates:
+# 1. Standard AD -> Nubus user/group sync
+# 2. openDesk post-processing: sets openDesk user attributes based on
+#    AD group memberships (including nested/recursive group resolution)
+#
+# Flow:
+#   AD Users + Groups -> Directory Importer Sync -> openDesk Post-Processing
+#     -> Attribute-to-Group Mapper (automatic in Nubus) -> managed-by-attribute-* groups
+
+udm:
+    uri: "https://nubus.example.com/univention/udm/"
+    user: "Administrator"
+    password: "supersecret"
+    # ca_cert: "/etc/ssl/certs/ca-certificates-nubus.crt"
+    skip_writes: false
+    user_ou: "ou=ad-import"
+    user_primary_key_property: "univentionObjectIdentifier"
+    user_properties:
+        - "username"
+        - "firstname"
+        - "lastname"
+        - "e-mail"
+        - "phone"
+        - "mobileTelephoneNumber"
+        - "organisation"
+        - "city"
+        - "country"
+        - "postcode"
+        - "street"
+        - "description"
+        - "employeeNumber"
+        - "employeeType"
+        - "univentionObjectIdentifier"
+    group_ou: "ou=ad-import"
+    group_primary_key_property: "univentionObjectIdentifier"
+
+source:
+    ldap_uri: "ldaps://your-ad-server:636"
+    bind_dn: "CN=service-account,CN=Users,DC=example,DC=com"
+    password: "your-ad-password"
+    # ca_cert: "/etc/ssl/certs/ca-certificates-ad.crt"
+    timeout: 5
+    search_pagesize: 500
+
+    user_base: "CN=Users,DC=example,DC=com"
+    user_scope: "sub"
+    user_filter: "(&(objectClass=user)(sAMAccountType=805306368)(givenName=*)(sn=*)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+    user_attrs:
+        - "objectGUID"
+        - "sAMAccountName"
+        - "givenName"
+        - "sn"
+        - "mail"
+        - "description"
+        - "telephoneNumber"
+        - "mobile"
+        - "o"
+        - "l"
+        - "postalCode"
+        - "c"
+        - "employeeNumber"
+        - "employeeType"
+        - "proxyAddresses"
+        - "memberOf"
+    user_trans:
+        sanitizer:
+            objectGUID:
+              - univention.directory_importer.sanitize:guid2uuid
+            telephoneNumber:
+              - univention.directory_importer.sanitize:phone_sanitizer
+            mobile:
+              - univention.directory_importer.sanitize:phone_sanitizer
+        rename_attrs:
+            univentionObjectIdentifier: "objectGUID"
+            username: "sAMAccountName"
+            firstname: "givenName"
+            lastname: "sn"
+            "e-mail": "mail"
+            phone: "telephoneNumber"
+            mobileTelephoneNumber: "mobile"
+            organisation: "o"
+            city: "l"
+            country: "c"
+            postcode: "postalCode"
+        remove_attrs:
+            - "objectGUID"
+            - "proxyAddresses"
+            - "memberOf"
+        decompose_attrs:
+            proxyAddresses:
+                - "^SMTP:(?P<mail>.+)$"
+                - "^smtp:(?P<mailAlternativeAddress>.+)$"
+
+    group_base: "CN=Groups,DC=example,DC=com"
+    group_scope: "sub"
+    group_trans:
+        rename_attrs:
+            univentionObjectIdentifier: "objectGUID"
+            name: "cn"
+            users: "member"
+        remove_attrs:
+            - "objectGUID"
+
+# ============================================================================
+# openDesk Post-Processing
+# ============================================================================
+# After syncing users and groups, resolve nested AD group memberships and set
+# openDesk user attributes accordingly.
+#
+# The groups used here are fetched via a SEPARATE LDAP search, independent of
+# the groups synced to Nubus (source.group_base). This allows you to reference
+# AD groups for permission mapping without importing them into Nubus.
+#
+# The attribute-to-group mapper in Nubus will then automatically add users
+# to the corresponding "managed-by-attribute-*" groups.
+#
+# For each rule:
+#   group:               AD group name (CN) — looked up in the postprocessing group search
+#   attribute:           UDM property to set on the user
+#   value_if_member:     Value when user is a member (direct or nested)
+#   value_if_not_member: Value when user is NOT a member (optional)
+#
+# Nested groups are resolved recursively. Example:
+#   User in "Team-Dev" -> "Team-Dev" nested in "Dept-IT" -> "Dept-IT" nested in "All-Groupware-Users"
+#   => User is considered member of "All-Groupware-Users"
+# ============================================================================
+group_attribute_mapping:
+    enabled: true
+
+    # Separate LDAP search for groups used in the mapping rules.
+    # This is independent of source.group_base — those groups get synced to Nubus,
+    # these groups are only used to resolve memberships for setting openDesk attributes.
+    group_base: "DC=example,DC=com"
+    group_scope: "sub"
+    group_filter: "(objectClass=group)"
+
+    mapping:
+        # --- Groupware (E-Mail, Calendar, Contacts via OX) ---
+        - group: "openDesk-Groupware-Users"
+          attribute: "isOxUser"
+          value_if_member: "OK"
+          # Note: no value_if_not_member - attribute is only set for members
+
+        # --- File Sharing (Nextcloud) ---
+        - group: "openDesk-Fileshare-Users"
+          attribute: "opendeskFileshareEnabled"
+          value_if_member: "TRUE"
+          value_if_not_member: "FALSE"
+
+        # --- Project Management (OpenProject) ---
+        - group: "openDesk-Project-Users"
+          attribute: "opendeskProjectmanagementEnabled"
+          value_if_member: "TRUE"
+          value_if_not_member: "FALSE"
+
+        # --- Knowledge Management (XWiki) ---
+        - group: "openDesk-Wiki-Users"
+          attribute: "opendeskKnowledgemanagementEnabled"
+          value_if_member: "TRUE"
+          value_if_not_member: "FALSE"
+
+        # --- Live Collaboration / Chat (Element) ---
+        - group: "openDesk-Chat-Users"
+          attribute: "opendeskLivecollaborationEnabled"
+          value_if_member: "TRUE"
+          value_if_not_member: "FALSE"
+
+        # --- Video Conference (Jitsi) ---
+        - group: "openDesk-Video-Users"
+          attribute: "opendeskVideoconferenceEnabled"
+          value_if_member: "TRUE"
+          value_if_not_member: "FALSE"
+
+        # --- Admin roles ---
+        - group: "openDesk-Fileshare-Admins"
+          attribute: "opendeskFileshareAdmin"
+          value_if_member: "TRUE"
+          value_if_not_member: "FALSE"
+
+        - group: "openDesk-Project-Admins"
+          attribute: "opendeskProjectmanagementAdmin"
+          value_if_member: "TRUE"
+          value_if_not_member: "FALSE"
+
+        - group: "openDesk-Wiki-Admins"
+          attribute: "opendeskKnowledgemanagementAdmin"
+          value_if_member: "TRUE"
+          value_if_not_member: "FALSE"

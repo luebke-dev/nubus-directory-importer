@@ -178,10 +178,30 @@ CFG_SCHEMA_SOURCE_LDAP = Map(
     },
 )
 
+CFG_MAPPING_RULE = Map(
+    {
+        "group": Str(),
+        "attribute": Str(),
+        "value_if_member": Str(),
+        Optional("value_if_not_member"): Str(),
+    },
+)
+
+CFG_GROUP_ATTRIBUTE_MAPPING = Map(
+    {
+        Optional("enabled", default=False): Bool(),
+        "group_base": Str(),
+        Optional("group_scope", default="sub"): Enum(("one", "sub")),
+        Optional("group_filter", default="(objectClass=group)"): Str(),
+        "mapping": Seq(CFG_MAPPING_RULE),
+    },
+)
+
 CFG_SCHEMA = Map(
     {
         "udm": CFG_SCHEMA_UDM,
         "source": CFG_SCHEMA_SOURCE_LDAP,
+        Optional("group_attribute_mapping"): CFG_GROUP_ATTRIBUTE_MAPPING,
     },
 )
 
@@ -332,6 +352,48 @@ class UDMConfig:
         self.group_properties = set(yml["group_properties"].data)
 
 
+class MappingRule:
+    """
+    a single group membership to attribute value mapping rule
+    """
+
+    __slots__ = ("group", "attribute", "value_if_member", "value_if_not_member")
+
+    group: str
+    attribute: str
+    value_if_member: str
+
+    def __init__(self, yml):
+        self.group = yml["group"].text
+        self.attribute = yml["attribute"].text
+        self.value_if_member = yml["value_if_member"].text
+        value_if_not_member = yml.get("value_if_not_member")
+        self.value_if_not_member = (
+            value_if_not_member.text if value_if_not_member is not None else None
+        )
+
+
+class GroupAttributeMappingConfig:
+    """
+    configuration for mapping source group memberships to target user
+    attribute values
+    """
+
+    __slots__ = ("enabled", "group_base", "group_scope", "group_filter", "mapping")
+
+    enabled: bool
+    group_base: str
+    group_scope: int
+    group_filter: str
+
+    def __init__(self, yml):
+        self.enabled = yml["enabled"].data
+        self.group_base = yml["group_base"].text
+        self.group_scope = SEARCH_SCOPE[yml["group_scope"].text]
+        self.group_filter = yml["group_filter"].text
+        self.mapping = [MappingRule(rule) for rule in yml["mapping"]]
+
+
 class ConnectorConfig:
     """
     Model for the complete connector configuration
@@ -341,6 +403,7 @@ class ConnectorConfig:
         "state",
         "src",
         "udm",
+        "group_attribute_mapping",
     )
 
     src: SourceConfig
@@ -351,3 +414,9 @@ class ConnectorConfig:
             yml = strictyaml.load(config_file.read(), CFG_SCHEMA)
         self.src = SourceConfig(yml["source"], password=source_password)
         self.udm = UDMConfig(yml["udm"], password=udm_password)
+        mapping_yml = yml.get("group_attribute_mapping")
+        self.group_attribute_mapping = (
+            GroupAttributeMappingConfig(mapping_yml)
+            if mapping_yml is not None
+            else None
+        )
