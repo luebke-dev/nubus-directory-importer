@@ -84,6 +84,22 @@ CFG_USER_PROPS_DEFAULT = [
     "univentionObjectIdentifier",
 ]
 
+CFG_FUNCTIONAL_ACCOUNT_ATTRS_DEFAULT = [
+    "objectGUID",
+    "cn",
+    "description",
+    "mail",
+    "member",
+]
+
+CFG_FUNCTIONAL_ACCOUNT_PROPS_DEFAULT = [
+    "name",
+    "mailPrimaryAddress",
+    "personal",
+    "users",
+    "univentionObjectIdentifier",
+]
+
 CFG_GROUP_PROPS_DEFAULT = [
     "name",
     "description",
@@ -112,6 +128,15 @@ CFG_SCHEMA_UDM = Map(
         "group_ou": Str(),
         Optional("group_primary_key_property", default="uniqueIdentifier"): Str(),
         Optional("group_properties", default=CFG_GROUP_PROPS_DEFAULT): Seq(Str()),
+        Optional("functional_account_ou"): Str(),
+        Optional(
+            "functional_account_primary_key_property",
+            default="univentionObjectIdentifier",
+        ): Str(),
+        Optional(
+            "functional_account_properties",
+            default=CFG_FUNCTIONAL_ACCOUNT_PROPS_DEFAULT,
+        ): Seq(Str()),
     },
 )
 
@@ -177,6 +202,18 @@ CFG_SCHEMA_SOURCE_LDAP = Map(
         Optional("group_attrs", default=CFG_GRP_ATTRS_DEFAULT): Seq(Str()),
         Optional("group_range_attrs", default=["member"]): Seq(Str()),
         Optional("group_trans"): CFG_TRANSFORMER,
+        Optional("functional_account_base"): Str(),
+        Optional("functional_account_scope", default="sub"): Enum(("one", "sub")),
+        Optional(
+            "functional_account_filter",
+            default="(&(objectClass=group)(mail=*))",
+        ): Str(),
+        Optional(
+            "functional_account_attrs",
+            default=CFG_FUNCTIONAL_ACCOUNT_ATTRS_DEFAULT,
+        ): Seq(Str()),
+        Optional("functional_account_range_attrs", default=["member"]): Seq(Str()),
+        Optional("functional_account_trans"): CFG_TRANSFORMER,
     },
 )
 
@@ -218,6 +255,12 @@ class SourceConfig:
         "group_attrs",
         "group_range_attrs",
         "group_trans",
+        "functional_account_base",
+        "functional_account_scope",
+        "functional_account_filter",
+        "functional_account_attrs",
+        "functional_account_range_attrs",
+        "functional_account_trans",
     )
 
     ldap_uri: LDAPUrl
@@ -261,6 +304,20 @@ class SourceConfig:
         self.group_attrs = yml["group_attrs"].data
         self.group_range_attrs = yml["group_range_attrs"].data
         self.group_trans = Transformer(**self._yml["group_trans"].data)
+        fa_base = yml.get("functional_account_base", None)
+        self.functional_account_base = fa_base.text if fa_base is not None else None
+        self.functional_account_scope = SEARCH_SCOPE[
+            yml["functional_account_scope"].text
+        ]
+        self.functional_account_filter = yml["functional_account_filter"].text
+        self.functional_account_attrs = yml["functional_account_attrs"].data
+        self.functional_account_range_attrs = yml[
+            "functional_account_range_attrs"
+        ].data
+        fa_trans = yml.get("functional_account_trans", None)
+        self.functional_account_trans = (
+            Transformer(**fa_trans.data) if fa_trans is not None else None
+        )
 
     @property
     def ignore_dn_regex(self):
@@ -296,6 +353,9 @@ class UDMConfig:
         "group_ou",
         "group_primary_key_property",
         "group_properties",
+        "functional_account_ou",
+        "functional_account_primary_key_property",
+        "functional_account_properties",
     )
 
     uri: str
@@ -328,6 +388,16 @@ class UDMConfig:
         self.group_ou = yml["group_ou"].text
         self.group_primary_key_property = yml["group_primary_key_property"].text
         self.group_properties = set(yml["group_properties"].data)
+        fa_ou = yml.get("functional_account_ou", None)
+        self.functional_account_ou = (
+            fa_ou.text if fa_ou is not None else self.user_ou
+        )
+        self.functional_account_primary_key_property = yml[
+            "functional_account_primary_key_property"
+        ].text
+        self.functional_account_properties = set(
+            yml["functional_account_properties"].data,
+        )
 
 
 class ConnectorConfig:

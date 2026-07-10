@@ -221,6 +221,24 @@ configFile:
         - "objectGUID"
         - "objectSid"
 
+    # Functional mailboxes are described by one directory object per mailbox.
+    # Recommended source conventions:
+    # - plain AD: one security group per mailbox, mail = address, member = access list
+    # - AD with Exchange: shared mailbox users (msExchRecipientTypeDetails=4),
+    #   access list from msExchDelegateListLink
+    # Make sure these objects are excluded from group_filter and vice versa.
+    # functional_account_base: "CN=Users,DC=ad,DC=test"
+    # functional_account_filter: "(&(objectClass=group)(mail=*)(groupType:1.2.840.113556.1.4.803:=2147483648))"
+    # functional_account_trans:
+    #   rename_attrs:
+    #     univentionObjectIdentifier: "objectGUID"
+    #     name: "cn"
+    #     mailPrimaryAddress: "mail"
+    #     personal: "description"
+    #     users: "member"
+    #   remove_attrs:
+    #     - "objectGUID"
+
 resources:
   limits:
     memory: "4Gi"

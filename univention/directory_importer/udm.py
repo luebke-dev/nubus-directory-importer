@@ -40,6 +40,7 @@ class UDMModel(enum.Enum):
 
     USER: str = "users/user"
     GROUP: str = "groups/group"
+    FUNCTIONAL_ACCOUNT: str = "oxmail/functional_account"
     OU: str = "container/ou"
 
 

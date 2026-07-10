@@ -13,7 +13,7 @@ import ldap
 from ldap.controls.pagedresults import SimplePagedResultsControl
 from ldap.ldapobject import ReconnectLDAPObject
 
-from junkaptor.trans import TransformerSeq
+from junkaptor.trans import Transformer, TransformerSeq
 
 from . import gen_password
 from .config import ConnectorConfig
@@ -266,12 +266,14 @@ class Connector:
                         count,
                     )
 
+    GRACE_PERIOD_MODELS = (UDMModel.USER, UDMModel.FUNCTIONAL_ACCOUNT)
+
     def _grace_period_active(self, model) -> bool:
         """
         returns whether the deletion grace period applies to this model
         """
         return (
-            model == UDMModel.USER
+            model in self.GRACE_PERIOD_MODELS
             and self._config.udm.deletion_grace_period_days > 0
         )
 
@@ -283,13 +285,19 @@ class Connector:
         ts_property = self._config.udm.deprovision_timestamp_property
         ts_value = entry.properties.get(ts_property)
         if not ts_value:
+            deprovision_props = {
+                ts_property: now.strftime(DEPROVISION_TS_FORMAT),
+            }
+            if model == UDMModel.USER:
+                deprovision_props["disabled"] = True
+            else:
+                # functional accounts have no disabled property, revoking
+                # the access list blocks usage while the mailbox is kept
+                deprovision_props["users"] = []
             self._udm.modify(
                 model,
                 entry.dn,
-                {
-                    "disabled": True,
-                    ts_property: now.strftime(DEPROVISION_TS_FORMAT),
-                },
+                deprovision_props,
             )
             logging.info(
                 "Deprovisioned target %s entry %s, deletion in %d days",
@@ -469,7 +477,8 @@ class Connector:
                         ts_property = self._config.udm.deprovision_timestamp_property
                         if old_entries[target_primary_key].properties.get(ts_property):
                             update_props[ts_property] = None
-                            update_props.setdefault("disabled", False)
+                            if model == UDMModel.USER:
+                                update_props.setdefault("disabled", False)
                             logging.info(
                                 "Reprovisioning %s entry with primary key %r",
                                 model.value,
@@ -512,7 +521,7 @@ class Connector:
                     # Basically skip_writes: true sucks!
                     if model == UDMModel.USER:
                         target_dn = f'uid={target_props["username"]},{position}'
-                    elif model == UDMModel.GROUP:
+                    else:
                         target_dn = f'cn={target_props["name"]},{position}'
                     new_id2dn[target_primary_key] = target_dn
                     logging.info(
@@ -535,6 +544,67 @@ class Connector:
         delete_count = self.delete_old_entries(model, old_entries, new_id2dn)
         return source_results_count, error_count, delete_count, new_id2dn
         # end of .sync_entries()
+
+    def sync_functional_accounts(self, source_users, id2dn_users):
+        """
+        sync functional mailboxes to oxmail/functional_account entries,
+        member references are resolved against the users synced in this run
+        """
+        fa_trans = self._config.src.functional_account_trans
+        if fa_trans is None:
+            raise ValueError(
+                "functional_account_base is set but functional_account_trans "
+                "is missing",
+            )
+        position = (
+            f"{self._config.udm.functional_account_ou},{self._udm.base_position}"
+        )
+        self._udm._assure_ou(self._config.udm.functional_account_ou)
+        query_properties = set(self._config.udm.functional_account_properties)
+        if self._grace_period_active(UDMModel.FUNCTIONAL_ACCOUNT):
+            query_properties.add(
+                self._config.udm.deprovision_timestamp_property,
+            )
+        old_entries = self._udm.list(
+            UDMModel.FUNCTIONAL_ACCOUNT,
+            self._config.udm.functional_account_primary_key_property,
+            position=position,
+            properties=sorted(query_properties),
+        )
+        source_entries = dict(
+            self.source_search(
+                self._config.src.functional_account_base,
+                self._config.src.functional_account_scope,
+                self._config.src.functional_account_filter,
+                self._config.src.functional_account_attrs,
+                self._config.src.functional_account_range_attrs,
+            ),
+        )
+        source_count, error_count, delete_count, _ = self.sync_entries(
+            model=UDMModel.FUNCTIONAL_ACCOUNT,
+            position=position,
+            source=source_entries,
+            primary_key=self._config.udm.functional_account_primary_key_property,
+            properties=self._config.udm.functional_account_properties,
+            trans=TransformerSeq(
+                (
+                    fa_trans,
+                    MemberRefsTransformer(
+                        user_primary_key=self._config.udm.user_primary_key_property,
+                        user_trans=self._config.src.user_trans,
+                        users=source_users,
+                        id2dn_users=id2dn_users,
+                        group_primary_key=self._config.udm.group_primary_key_property,
+                        group_trans=self._config.src.group_trans,
+                        groups={},
+                        id2dn_groups={},
+                    ),
+                    Transformer(remove_attrs=["nestedGroup"]),
+                ),
+            ),
+            old_entries=old_entries,
+        )
+        return source_count, error_count, delete_count
 
     def __call__(self):
         """
@@ -615,6 +685,15 @@ class Connector:
         source_count_all += source_count
         delete_count_all += delete_count
         error_count_all += error_count
+
+        if self._config.src.functional_account_base:
+            source_count, error_count, delete_count = self.sync_functional_accounts(
+                source_users,
+                id2dn_users,
+            )
+            source_count_all += source_count
+            delete_count_all += delete_count
+            error_count_all += error_count
 
         # finally log summary messages
         self.log_summary(
