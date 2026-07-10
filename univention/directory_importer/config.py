@@ -160,6 +160,9 @@ CFG_SCHEMA_SOURCE_LDAP = Map(
         Optional("trace_level", default=0): Int(),
         Optional("search_pagesize", default=500): Int(),
         Optional("ignore_dn_regex"): Str(),
+        Optional("enable_domain_based_username", default=False): Bool(),
+        Optional("domain_based_username_attr", default="username"): Str(),
+        Optional("domain_based_username_separator", default="_"): Str(),
         "user_base": Str(),
         Optional("user_scope", default="sub"): Enum(("one", "sub")),
         Optional("user_filter", default="(objectClass=user)"): Str(),
@@ -201,6 +204,9 @@ class SourceConfig:
         "timeout",
         "search_pagesize",
         # Functional config
+        "enable_domain_based_username",
+        "domain_based_username_attr",
+        "domain_based_username_separator",
         "user_base",
         "user_scope",
         "user_filter",
@@ -244,6 +250,13 @@ class SourceConfig:
         self.trace_level = yml["trace_level"].data
         self.timeout = yml["timeout"].data
         self.search_pagesize = yml["search_pagesize"].data
+        self.enable_domain_based_username = yml[
+            "enable_domain_based_username"
+        ].data
+        self.domain_based_username_attr = yml["domain_based_username_attr"].text
+        self.domain_based_username_separator = yml[
+            "domain_based_username_separator"
+        ].text
         self.user_base = yml["user_base"].text
         self.user_scope = SEARCH_SCOPE[yml["user_scope"].text]
         self.user_filter = yml["user_filter"].text

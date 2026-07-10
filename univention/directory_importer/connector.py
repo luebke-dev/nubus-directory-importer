@@ -16,7 +16,8 @@ from junkaptor.trans import TransformerSeq
 
 from . import gen_password
 from .config import ConnectorConfig
-from .trans import MemberRefsTransformer
+from .sanitize import extract_domain_from_dn
+from .trans import DomainBasedUsernameTransformer, MemberRefsTransformer
 from .udm import UDMClient, UDMEntry, UDMMethod, UDMModel
 
 
@@ -37,6 +38,8 @@ class Connector:
         "_udm",
         "user_single_val_attrs",
         "group_single_val_attrs",
+        "_domain_username_trans",
+        "_created_ous",
     )
 
     _config: ConnectorConfig
@@ -63,6 +66,19 @@ class Connector:
         )
         # cache var for source LDAP connection opened later
         self._ldap_conn = None
+        # cache for already created domain OUs
+        self._created_ous = set()
+        self._domain_username_trans = None
+        if self._config.src.enable_domain_based_username:
+            logging.info(
+                "Domain-based usernames enabled (attribute: %s, separator: %s)",
+                self._config.src.domain_based_username_attr,
+                self._config.src.domain_based_username_separator,
+            )
+            self._domain_username_trans = DomainBasedUsernameTransformer(
+                username_attr=self._config.src.domain_based_username_attr,
+                separator=self._config.src.domain_based_username_separator,
+            )
 
     @property
     def ldap_conn(self):
@@ -342,6 +358,32 @@ class Connector:
         # trans=self._config.src.user_trans,
         # old_entries=old_users,
 
+    def _ensure_domain_ou(self, domain: str, parent_position: str):
+        """
+        create a domain sub-OU below the parent position once per run
+        """
+        if domain in self._created_ous:
+            return
+        try:
+            self._udm.create_ou(
+                name=domain,
+                description=f"Users from domain {domain}",
+                position=parent_position,
+            )
+        except Exception as err:
+            logging.warning("Could not create domain OU %s: %s", domain, err)
+        self._created_ous.add(domain)
+
+    def _transform_entry(self, source_dn, source_entry, trans):
+        """
+        apply the configured transformer and, when enabled, the
+        domain-based username transformation on top
+        """
+        record = trans(source_entry)
+        if self._domain_username_trans is not None:
+            record = self._domain_username_trans(record, source_dn=source_dn)
+        return record
+
     def sync_entries(
         self,
         model: UDMModel,
@@ -359,7 +401,10 @@ class Connector:
             logging.debug("source_dn = %r", source_dn)
             logging.debug("source_entry = %r", source_entry)
             try:
-                target_props = self._udm.prep_properties(model, trans(source_entry))
+                target_props = self._udm.prep_properties(
+                    model,
+                    self._transform_entry(source_dn, source_entry, trans),
+                )
             except Exception as err:
                 logging.error(
                     "Error transforming to target properties, source_entry = %r : %s",
@@ -371,6 +416,17 @@ class Connector:
                 continue
             logging.debug("target_props = %r", target_props)
             target_primary_key = target_props[primary_key]
+            add_position = position
+            update_position = position
+            if self._domain_username_trans is not None and model == UDMModel.USER:
+                domain = extract_domain_from_dn(source_dn)
+                if domain:
+                    self._ensure_domain_ou(domain, position)
+                    add_position = f"ou={domain},{position}"
+                # never pass a position on modify here: the UDM REST API
+                # treats a changed position as a move, which would pull
+                # domain users back into the parent OU on every update
+                update_position = None
             try:
                 if target_primary_key in old_entries:
                     update_props = self._prep_updates(
@@ -391,7 +447,7 @@ class Connector:
                         model,
                         target_dn,
                         update_props,
-                        position=position,
+                        position=update_position,
                     )
                     logging.info(
                         "Modified %s entry %s with primary key %r: %s",
@@ -408,16 +464,16 @@ class Connector:
                     self._udm.add(
                         model,
                         target_props,
-                        position=position,
+                        position=add_position,
                     )
                     # FIX ME!
                     # We always have to compose the DNs even with UCS 5+ because
                     # in case skip_writes: true is used there's no real UDM response.
                     # Basically skip_writes: true sucks!
                     if model == UDMModel.USER:
-                        target_dn = f'uid={target_props["username"]},{position}'
+                        target_dn = f'uid={target_props["username"]},{add_position}'
                     elif model == UDMModel.GROUP:
-                        target_dn = f'cn={target_props["name"]},{position}'
+                        target_dn = f'cn={target_props["name"]},{add_position}'
                     new_id2dn[target_primary_key] = target_dn
                     logging.info(
                         "Added %s entry %s with primary key %r",

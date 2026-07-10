@@ -10,6 +10,55 @@ import logging
 from junkaptor import decode_list
 from junkaptor.trans import Transformer
 
+from .sanitize import extract_domain_from_dn
+
+
+class DomainBasedUsernameTransformer:
+    """
+    Appends the domain encoded in the source DN to the username attribute,
+    e.g. CN=John.Doe,...,DC=sub,DC=example,DC=com turns username john.doe
+    into john.doe_sub.example.com. Unlike the junkaptor transformers this
+    one needs the source DN, which is not part of the record, so it is
+    invoked separately by the Connector.
+    """
+
+    __slots__ = ("_username_attr", "_separator")
+
+    def __init__(self, username_attr: str = "username", separator: str = "_"):
+        self._username_attr = username_attr
+        self._separator = separator
+
+    def __call__(self, record, source_dn=None):
+        if not source_dn:
+            logging.warning(
+                "No source DN provided, skipping domain-based username "
+                "transformation",
+            )
+            return record
+        domain = extract_domain_from_dn(source_dn)
+        if not domain:
+            logging.warning("Could not extract domain from DN: %s", source_dn)
+            return record
+        if self._username_attr not in record:
+            return record
+        username_vals = record[self._username_attr]
+        if isinstance(username_vals, list):
+            username_val = username_vals[0]
+        else:
+            username_val = username_vals
+        if not isinstance(username_val, bytes):
+            username_val = username_val.encode("utf-8")
+        username = username_val.decode("utf-8")
+        new_username = f"{username}{self._separator}{domain}"
+        record[self._username_attr] = [new_username.encode("utf-8")]
+        logging.debug(
+            "Changed username %r to %r based on DN %r",
+            username,
+            new_username,
+            source_dn,
+        )
+        return record
+
 
 class MemberRefsTransformer(Transformer):
     """

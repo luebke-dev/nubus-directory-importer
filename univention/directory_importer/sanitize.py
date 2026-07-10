@@ -7,6 +7,8 @@ univention.directory_importer.sanitize - low-level data sanitizer functions
 
 import uuid
 
+import ldap.dn
+
 import phonenumbers
 
 PHONE_REGION = "DE"
@@ -61,3 +63,24 @@ def guid2uuid(val: bytes) -> bytes:
     returns GUID as UUID string representation
     """
     return str(uuid.UUID(bytes_le=val)).encode("ascii")
+
+
+def extract_domain_from_dn(dn: str) -> str:
+    """
+    returns the domain encoded in the DC components of a DN as
+    dot-separated string, e.g.
+    CN=John.Doe,OU=Users,DC=sub,DC=example,DC=com -> sub.example.com,
+    empty string if the DN is empty, unparseable or has no DC components
+    """
+    if not dn:
+        return ""
+    try:
+        parsed = ldap.dn.str2dn(dn)
+    except ldap.DECODING_ERROR:
+        return ""
+    dc_components = [
+        rdn[0][1]
+        for rdn in parsed
+        if rdn[0][0].upper() == "DC"
+    ]
+    return ".".join(dc_components)
